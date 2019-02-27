@@ -1,0 +1,126 @@
+Zookeeper正常部署
+首先保证Zookeeper集群的正常部署，并启动
+
+$ bin/zkServer.sh start
+Hadoop正常部署
+Hadoop集群的正常部署并启动
+
+$ sbin/start-dfs.sh
+$ sbin/start-yarn.sh
+HBase解压
+解压HBase到指定目录
+
+$ tar -zxf ~/softwares/installations/hbase-1.2.0-bin.tar.gz -C /opt/software/
+HBase配置文件
+hbase-env.sh
+
+export JAVA_HOME=/usr/java/jdk1.8.0_121
+export HBASE_MANAGES_ZK=false
+hbase-site.xml
+
+<configuration>
+    <property>     
+        <name>hbase.rootdir</name>     
+        <value>hdfs://hadoop001:9000/hbase</value>   
+    </property>
+
+    <property>   
+        <name>hbase.cluster.distributed</name>
+        <value>true</value>
+    </property>
+
+   <!-- 0.98后的新变动，之前版本没有.port,默认端口为60000 -->
+    <property>
+        <name>hbase.master.port</name>
+        <value>16000</value>
+    </property>
+
+    <property>   
+        <name>hbase.zookeeper.quorum</name>
+        <value> hadoop001:2181, hadoop002:2181, hadoop003:2181</value>
+    </property>
+
+    <property>   
+        <name>hbase.zookeeper.property.dataDir</name>
+     <value>/opt/software/zookeeper-3.4.5/zkData</value>
+    </property>
+</configuration>
+regionservers
+
+hadoop001
+hadoop002
+hadoop003
+HBase需要依赖的Jar包
+由于HBase需要依赖Hadoop，所以替换HBase的lib目录下的jar包，以解决兼容问题
+
+1) 删除原有的jar
+
+$ rm -rf /opt/software/hbase-1.2.0/lib/hadoop-*
+$ rm -rf /opt/software/hbase-1.2.0/lib/zookeeper-3.4.6.jar
+2) 拷贝新jar，涉及的jar
+
+hadoop-annotations-2.6.0.jar
+hadoop-auth-2.6.0.jar
+hadoop-client-2.6.0.jar
+hadoop-common-2.6.0.jar
+hadoop-hdfs-2.6.0.jar
+hadoop-mapreduce-client-app-2.6.0.jar
+hadoop-mapreduce-client-common-2.6.0.jar
+hadoop-mapreduce-client-core-2.6.0.jar
+hadoop-mapreduce-client-hs-2.6.0.jar
+hadoop-mapreduce-client-hs-plugins-2.6.0.jar
+hadoop-mapreduce-client-jobclient-2.6.0.jar
+hadoop-mapreduce-client-jobclient-2.6.0-tests.jar
+hadoop-mapreduce-client-shuffle-2.6.0.jar
+hadoop-yarn-api-2.6.0.jar
+hadoop-yarn-applications-distributedshell-2.6.0.jar
+hadoop-yarn-applications-unmanaged-am-launcher-2.6.0.jar
+hadoop-yarn-client-2.6.0.jar
+hadoop-yarn-common-2.6.0.jar
+hadoop-yarn-server-applicationhistoryservice-2.6.0.jar
+hadoop-yarn-server-common-2.6.0.jar
+hadoop-yarn-server-nodemanager-2.6.0.jar
+hadoop-yarn-server-resourcemanager-2.6.0.jar
+hadoop-yarn-server-tests-2.6.0.jar
+hadoop-yarn-server-web-proxy-2.6.0.jar
+zookeeper-3.4.5.jar
+提示：这些jar包的对应版本应替换成你目前使用的hadoop版本，具体情况具体分析。
+查找jar包举例
+
+$ find /opt/software/hadoop-2.6.0/ -name hadoop-annotations*
+然后将找到的jar包复制到HBase的lib目录下即可。
+
+HBase软连接Hadoop配置
+$ ln -s /opt/software/hadoop-2.6.0/etc/hadoop/core-site.xml /opt/software/hbase-1.2.0/conf/core-site.xml
+$ ln -s /opt/software/hadoop-2.6.0/etc/hadoop/hdfs-site.xml /opt/software/hbase-1.2.0/conf/hdfs-site.xml
+HBase远程scp到其他机器
+$ scp -r /opt/software/hbase-1.2.0/ hadoop002:/opt/software/
+$ scp -r /opt/software/hbase-1.2.0/ hadoop003:/opt/software/
+HBase服务的启动
+启动方式1
+
+$ bin/hbase-daemon.sh start master
+$ bin/hbase-daemon.sh start regionserver
+提示：如果集群之间的节点时间不同步，会导致regionserver无法启动，抛出ClockOutOfSyncException异常。
+修复提示
+
+a、同步时间服务
+
+b、属性：hbase.master.maxclockskew设置更大的值
+
+<property>
+        <name>hbase.master.maxclockskew</name>
+        <value>180000</value>
+        <description>Time difference of regionserver from master</description>
+</property>
+启动方式2
+
+$ bin/start-hbase.sh
+对应的停止服务
+
+$ bin/stop-hbase.sh
+提示：如果使用的是JDK8以上版本，则应在hbase-evn.sh中移除“HBASE_MASTER_OPTS”和“HBASE_REGIONSERVER_OPTS”配置。
+查看HBase页面
+启动成功后，可以通过“host:port”的方式来访问HBase管理页面，例如：
+
+http://hadoop001:16010
