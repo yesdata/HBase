@@ -1,0 +1,433 @@
+HBase读写流程
+HBase读数据流程
+1) HRegionServer保存着.META.的这样一张表以及表数据，要访问表数据，首先Client先去访问zookeeper，从zookeeper里面获取-ROOT-表所在位置（新版本没有，暂不讨论新版本），进而找到.META.表所在的位置信息，即找到这个.META.表在哪个HRegionServer上保存着。
+
+2) 接着Client通过刚才获取到的HRegionServer的IP来访问.META.表所在的HRegionServer，从而读取到.META.，进而获取到.META.表中存放的元数据。
+
+3) Client通过元数据中存储的信息，访问对应的HRegionServer，然后扫描所在HRegionServer的Memstore和Storefile来查询数据。
+
+4) 最后HRegionServer把查询到的数据响应给Client。
+
+HBase写数据流程
+1) Client也是先访问zookeeper，找到-ROOT-表（新版本没有该表，暂不讨论），进而找到.META.表，并获取.META.表信息。
+
+2) 确定当前将要写入的数据所对应的RegionServer服务器和Region。
+
+3) Client向该RegionServer服务器发起写入数据请求，然后RegionServer收到请求并响应。
+
+4) Client先把数据写入到HLog，以防止数据丢失。
+
+5) 然后将数据写入到Memstore。
+
+6) 如果Hlog和Memstore均写入成功，则这条数据写入成功。在此过程中，如果Memstore达到阈值，会把Memstore中的数据flush到StoreFile中。
+
+7) 当Storefile越来越多，会触发Compact合并操作，把过多的Storefile合并成一个大的Storefile。当Storefile越来越大，Region也会越来越大，达到阈值后，会触发Split操作，将Region一分为二。
+
+
+提示：因为内存空间是有限的，所以说溢写过程必定伴随着大量的小文件产生。
+JavaAPI
+新建Maven Project
+新建项目后在pom.xml中添加依赖
+
+<dependency>
+    <groupId>org.apache.hbase</groupId>
+    <artifactId>hbase-server</artifactId>
+    <version>1.2.0</version>
+</dependency>
+
+<dependency>
+    <groupId>org.apache.hbase</groupId>
+    <artifactId>hbase-client</artifactId>
+    <version>1.2.0</version>
+</dependency>
+<!-- 下面这个依赖不是必须添加 -->
+<dependency>
+    <groupId>jdk.tools</groupId>
+    <artifactId>jdk.tools</artifactId>
+    <version>1.6</version>
+    <scope>system</scope>
+    <systemPath>${JAVA_HOME}/lib/tools.jar</systemPath>
+</dependency>
+编写HBaseAPI
+这部分的内容，我们先学习使用老版本的API，接着再写出新版本的API调用方式。因为有些时候我们需要一些过时的API来提供更好的兼容性。
+
+首先需要获取Configuration对象
+
+public static Configuration conf;
+static{
+//使用HBaseConfiguration的单例方法实例化
+conf = HBaseConfiguration.create();
+conf.set("hbase.zookeeper.quorum", "192.168.216.20");
+conf.set("hbase.zookeeper.property.clientPort", "2181");
+}
+判断表是否存在
+
+public static boolean isTableExist(String tableName) throws MasterNotRunningException, ZooKeeperConnectionException, IOException{
+    //在HBase中管理、访问表需要先创建HBaseAdmin对象
+//Connection connection = ConnectionFactory.createConnection(conf);
+//HBaseAdmin admin = (HBaseAdmin) connection.getAdmin();
+    HBaseAdmin admin = new HBaseAdmin(conf);
+    return admin.tableExists(tableName);
+}
+创建表
+
+public static void createTable(String tableName, String... columnFamily) throws MasterNotRunningException, ZooKeeperConnectionException, IOException{
+    HBaseAdmin admin = new HBaseAdmin(conf);
+    //判断表是否存在
+    if(isTableExist(tableName)){
+        System.out.println("表" + tableName + "已存在");
+        //System.exit(0);
+    }else{
+        //创建表属性对象,表名需要转字节
+        HTableDescriptor descriptor = new HTableDescriptor(TableName.valueOf(tableName));
+        //创建多个列族
+        for(String cf : columnFamily){
+            descriptor.addFamily(new HColumnDescriptor(cf));
+        }
+        //根据对表的配置，创建表
+        admin.createTable(descriptor);
+        System.out.println("表" + tableName + "创建成功！");
+    }
+}
+删除表
+
+public static void dropTable(String tableName) throws MasterNotRunningException, ZooKeeperConnectionException, IOException{
+    HBaseAdmin admin = new HBaseAdmin(conf);
+    if(isTableExist(tableName)){
+        admin.disableTable(tableName);
+        admin.deleteTable(tableName);
+        System.out.println("表" + tableName + "删除成功！");
+    }else{
+        System.out.println("表" + tableName + "不存在！");
+    }
+}
+向表中插入数据
+
+public static void addRowData(String tableName, String rowKey, String columnFamily, String column, String value) throws IOException{
+    //创建HTable对象
+    HTable hTable = new HTable(conf, tableName);
+    //向表中插入数据
+    Put put = new Put(Bytes.toBytes(rowKey));
+    //向Put对象中组装数据
+    put.add(Bytes.toBytes(columnFamily), Bytes.toBytes(column), Bytes.toBytes(value));
+    hTable.put(put);
+    hTable.close();
+    System.out.println("插入数据成功");
+}
+删除多行数据
+
+public static void deleteMultiRow(String tableName, String... rows) throws IOException{
+    HTable hTable = new HTable(conf, tableName);
+    List<Delete> deleteList = new ArrayList<Delete>();
+    for(String row : rows){
+        Delete delete = new Delete(Bytes.toBytes(row));
+        deleteList.add(delete);
+    }
+    hTable.delete(deleteList);
+    hTable.close();
+}
+得到所有数据
+
+public static void getAllRows(String tableName) throws IOException{
+    HTable hTable = new HTable(conf, tableName);
+    //得到用于扫描region的对象
+    Scan scan = new Scan();
+    //使用HTable得到resultcanner实现类的对象
+    ResultScanner resultScanner = hTable.getScanner(scan);
+    for(Result result : resultScanner){
+        Cell[] cells = result.rawCells();
+        for(Cell cell : cells){
+            //得到rowkey
+            System.out.println("行键:" + Bytes.toString(CellUtil.cloneRow(cell)));
+            //得到列族
+            System.out.println("列族" + Bytes.toString(CellUtil.cloneFamily(cell)));
+            System.out.println("列:" + Bytes.toString(CellUtil.cloneQualifier(cell)));
+            System.out.println("值:" + Bytes.toString(CellUtil.cloneValue(cell)));
+        }
+    }
+}
+得到某一行所有数据
+
+public static void getRow(String tableName, String rowKey) throws IOException{
+    HTable table = new HTable(conf, tableName);
+    Get get = new Get(Bytes.toBytes(rowKey));
+    //get.setMaxVersions();显示所有版本
+    //get.setTimeStamp();显示指定时间戳的版本
+    Result result = table.get(get);
+    for(Cell cell : result.rawCells()){
+        System.out.println("行键:" + Bytes.toString(result.getRow()));
+        System.out.println("列族" + Bytes.toString(CellUtil.cloneFamily(cell)));
+        System.out.println("列:" + Bytes.toString(CellUtil.cloneQualifier(cell)));
+        System.out.println("值:" + Bytes.toString(CellUtil.cloneValue(cell)));
+        System.out.println("时间戳:" + cell.getTimestamp());
+    }
+}
+获取某一行指定“列族:列”的数据
+
+public static void getRowQualifier(String tableName, String rowKey, String family, String qualifier) throws IOException{
+    HTable table = new HTable(conf, tableName);
+    Get get = new Get(Bytes.toBytes(rowKey));
+    get.addColumn(Bytes.toBytes(family), Bytes.toBytes(qualifier));
+    Result result = table.get(get);
+    for(Cell cell : result.rawCells()){
+        System.out.println("行键:" + Bytes.toString(result.getRow()));
+        System.out.println("列族" + Bytes.toString(CellUtil.cloneFamily(cell)));
+        System.out.println("列:" + Bytes.toString(CellUtil.cloneQualifier(cell)));
+        System.out.println("值:" + Bytes.toString(CellUtil.cloneValue(cell)));
+    }
+}
+MapReduce
+通过HBase的相关JavaAPI，我们可以实现伴随HBase操作的MapReduce过程，比如使用MapReduce将数据从本地文件系统导入到HBase的表中，比如我们从HBase中读取一些原始数据后使用MapReduce做数据分析。
+
+官方HBase-MapReduce
+查看HBase的MapReduce任务的所需的依赖
+
+$ bin/hbase mapredcp
+执行环境变量的导入
+
+$ export HBASE_HOME=/opt/software/hbase-1.2.0
+$ export HADOOP_CLASSPATH=`${HBASE_HOME}/bin/hbase mapredcp`
+运行官方的MapReduce任务
+
+案例一：统计Student表中有多少行数据
+
+$ /opt/software/hadoop-2.6.0//bin/yarn jar /opt/software/hbase-1.2.0/lib/hbase-server-1.2.0.jar rowcounter student
+案例二：使用MapReduce将本地数据导入到HBase
+
+(1) 在本地创建一个tsv格式的文件：fruit.tsv
+
+1001    Apple    Red
+1002    Pear        Yellow
+1003    Pineapple    Yellow
+(2) 创建HBase表
+
+hbase(main):001:0> create 'fruit','info'
+(3) 在HDFS中创建input_fruit文件夹并上传fruit.tsv文件
+
+$ /opt/software/hadoop-2.6.0/bin/hdfs dfs -mkdir /input_fruit/
+$ /opt/software/hadoop-2.6.0/bin/hdfs dfs -put fruit.tsv /input_fruit/
+(4) 执行MapReduce到HBase的fruit表中
+
+$ /opt/software/hadoop-2.6.0/bin/yarn jar lib/hbase-server-1.2.0.jar importtsv \
+-Dimporttsv.columns=HBASE_ROW_KEY,info:name,info:color fruit \
+hdfs://hadoop001:9000/input_fruit
+(5) 使用scan命令查看导入后的结果
+
+hbase(main):001:0> scan ‘fruit’
+自定义HBase-MapReduce1
+目标：将fruit表中的一部分数据，通过MR迁入到fruit_mr表中。
+
+1) 构建ReadFruitMapper类，用于读取fruit表中的数据
+
+package com.z.hbase_mr;
+
+import java.io.IOException;
+import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellUtil;
+import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
+import org.apache.hadoop.hbase.mapreduce.TableMapper;
+import org.apache.hadoop.hbase.util.Bytes;
+
+public class ReadFruitMapper extends TableMapper<ImmutableBytesWritable, Put> {
+
+    @Override
+    protected void map(ImmutableBytesWritable key, Result value, Context context) 
+    throws IOException, InterruptedException {
+    //将fruit的name和color提取出来，相当于将每一行数据读取出来放入到Put对象中。
+        Put put = new Put(key.get());
+        //遍历添加column行
+        for(Cell cell: value.rawCells()){
+            //添加/克隆列族:info
+            if("info".equals(Bytes.toString(CellUtil.cloneFamily(cell)))){
+                //添加/克隆列：name
+                if("name".equals(Bytes.toString(CellUtil.cloneQualifier(cell)))){
+                    //将该列cell加入到put对象中
+                    put.add(cell);
+                    //添加/克隆列:color
+                }else if("color".equals(Bytes.toString(CellUtil.cloneQualifier(cell)))){
+                    //向该列cell加入到put对象中
+                    put.add(cell);
+                }
+            }
+        }
+        //将从fruit读取到的每行数据写入到context中作为map的输出
+        context.write(key, put);
+    }
+}
+2) 构建WriteFruitMRReducer类，用于将读取到的fruit表中的数据写入到fruit_mr表中
+
+package com.z.hbase_mr;
+
+import java.io.IOException;
+import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
+import org.apache.hadoop.hbase.mapreduce.TableReducer;
+import org.apache.hadoop.io.NullWritable;
+
+public class WriteFruitMRReducer extends TableReducer<ImmutableBytesWritable, Put, NullWritable> {
+    @Override
+    protected void reduce(ImmutableBytesWritable key, Iterable<Put> values, Context context) 
+    throws IOException, InterruptedException {
+        //读出来的每一行数据写入到fruit_mr表中
+        for(Put put: values){
+            context.write(NullWritable.get(), put);
+        }
+    }
+}
+3) 构建Fruit2FruitMRRunner extends Configured implements Tool用于组装运行Job任务
+
+//组装Job
+public int run(String[] args) throws Exception {
+    //得到Configuration
+    Configuration conf = this.getConf();
+    //创建Job任务
+    Job job = Job.getInstance(conf, this.getClass().getSimpleName());
+    job.setJarByClass(Fruit2FruitMRRunner.class);
+
+    //配置Job
+    Scan scan = new Scan();
+    scan.setCacheBlocks(false);
+    scan.setCaching(500);
+
+    //设置Mapper，注意导入的是mapreduce包下的，不是mapred包下的，后者是老版本
+    TableMapReduceUtil.initTableMapperJob(
+    "fruit", //数据源的表名
+    scan, //scan扫描控制器
+    ReadFruitMapper.class,//设置Mapper类
+    ImmutableBytesWritable.class,//设置Mapper输出key类型
+    Put.class,//设置Mapper输出value值类型
+    job//设置给哪个JOB
+    );
+    //设置Reducer
+    TableMapReduceUtil.initTableReducerJob("fruit_mr", WriteFruitMRReducer.class, job);
+    //设置Reduce数量，最少1个
+    job.setNumReduceTasks(1);
+
+    boolean isSuccess = job.waitForCompletion(true);
+    if(!isSuccess){
+        throw new IOException("Job running with error");
+    }
+    return isSuccess ? 0 : 1;
+}
+4) 主函数中调用运行该Job任务
+
+public static void main( String[] args ) throws Exception{
+    Configuration conf = HBaseConfiguration.create();
+    int status = ToolRunner.run(conf, new Fruit2FruitMRRunner(), args);
+    System.exit(status);
+}
+5) 打包运行任务
+
+$ /opt/software/hadoop-2.6.0/bin/yarn jar ~/softwares/jars/hbase-0.0.1-SNAPSHOT.jar com.z.hbase.mr1.Fruit2FruitMRRunner
+
+
+运行任务前，如果待数据导入的表不存在，则需要提前创建之。
+
+maven打包命令：-P local clean package或-P dev clean package install（将第三方jar包一同打包，需要插件：maven-shade-plugin）
+自定义HBase-MapReduce2
+目标：实现将HDFS中的数据写入到HBase表中。
+
+1) 构建ReadFruitFromHDFSMapper于读取HDFS中的文件数据
+
+package com.z.hbase.mr2;
+
+import java.io.IOException;
+
+import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
+import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Mapper;
+
+public class ReadFruitFromHDFSMapper extends Mapper<LongWritable, Text, ImmutableBytesWritable, Put> {
+    @Override
+    protected void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException {
+        //从HDFS中读取的数据
+        String lineValue = value.toString();
+        //读取出来的每行数据使用\t进行分割，存于String数组
+        String[] values = lineValue.split("\t");
+
+        //根据数据中值的含义取值
+        String rowKey = values[0];
+        String name = values[1];
+        String color = values[2];
+
+        //初始化rowKey
+        ImmutableBytesWritable rowKeyWritable = new ImmutableBytesWritable(Bytes.toBytes(rowKey));
+
+        //初始化put对象
+        Put put = new Put(Bytes.toBytes(rowKey));
+
+        //参数分别:列族、列、值  
+        put.add(Bytes.toBytes("info"), Bytes.toBytes("name"),  Bytes.toBytes(name)); 
+        put.add(Bytes.toBytes("info"), Bytes.toBytes("color"),  Bytes.toBytes(color)); 
+
+        context.write(rowKeyWritable, put);
+    }
+}
+2) 构建WriteFruitMRFromTxtReducer类
+
+package com.z.hbase.mr2;
+
+import java.io.IOException;
+import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
+import org.apache.hadoop.hbase.mapreduce.TableReducer;
+import org.apache.hadoop.io.NullWritable;
+
+public class WriteFruitMRFromTxtReducer extends TableReducer<ImmutableBytesWritable, Put, NullWritable> {
+    @Override
+    protected void reduce(ImmutableBytesWritable key, Iterable<Put> values, Context context) throws IOException, InterruptedException {
+        //读出来的每一行数据写入到fruit_hdfs表中
+        for(Put put: values){
+            context.write(NullWritable.get(), put);
+        }
+    }
+}
+3) 创建Txt2FruitRunner组装Job
+
+public int run(String[] args) throws Exception {
+//得到Configuration
+Configuration conf = this.getConf();
+
+//创建Job任务
+Job job = Job.getInstance(conf, this.getClass().getSimpleName());
+job.setJarByClass(Txt2FruitRunner.class);
+Path inPath = new Path("hdfs://linux01:8020/input_fruit/fruit.tsv");
+FileInputFormat.addInputPath(job, inPath);
+
+//设置Mapper
+job.setMapperClass(ReadFruitFromHDFSMapper.class);
+job.setMapOutputKeyClass(ImmutableBytesWritable.class);
+job.setMapOutputValueClass(Put.class);
+
+//设置Reducer
+TableMapReduceUtil.initTableReducerJob("fruit_mr", WriteFruitMRFromTxtReducer.class, job);
+
+//设置Reduce数量，最少1个
+job.setNumReduceTasks(1);
+
+boolean isSuccess = job.waitForCompletion(true);
+if(!isSuccess){
+throw new IOException("Job running with error");
+}
+
+return isSuccess ? 0 : 1;
+}
+4) 调用执行Job
+
+public static void main(String[] args) throws Exception {
+        Configuration conf = HBaseConfiguration.create();
+        int status = ToolRunner.run(conf, new Txt2FruitRunner(), args);
+        System.exit(status);
+}
+5) 打包运行
+
+$ /opt/software/hadoop-2.6.0/bin/yarn jar ~/softwares/jars/hbase-0.0.1-SNAPSHOT.jar com.z.hbase.mr2.Txt2FruitRunner
+
+运行任务前，如果待数据导入的表不存在，则需要提前创建之。
+
+maven打包命令：-P local clean package或-P dev clean package install（将第三方jar包一同打包，需要插件：maven-shade-plugin）
