@@ -1,0 +1,76 @@
+HBaes介绍
+HBase的起源
+HBase的原型是Google的BigTable论文，受到了该论文思想的启发，目前作为Hadoop的子项目来开发维护，用于支持结构化的数据存储。
+
+官方网站
+
+2006年Google发表BigTable白皮书。
+
+2006年开始开发HBase。
+
+2008年北京成功开奥运会，程序员默默地将HBase弄成了Hadoop的子项目。
+
+2010年HBase成为Apache顶级项目。
+
+现在很多公司二次开发出了很多发行版本，也开始使用了。
+
+HBase的角色
+HMaster
+功能：
+
+1) 监控RegionServer
+
+2) 处理RegionServer故障转移
+
+3) 处理元数据的变更
+
+4) 处理region的分配或移除
+
+5) 在空闲时间进行数据的负载均衡
+
+6) 通过Zookeeper发布自己的位置给客户端
+
+RegionServer
+功能：
+
+1) 负责存储HBase的实际数据
+
+2) 处理分配给它的Region
+
+3) 刷新缓存到HDFS
+
+4) 维护HLog
+
+5) 执行压缩
+
+6) 负责处理Region分片
+
+组件：
+
+1) Write-Ahead logs
+
+HBase的修改记录，当对HBase读写数据的时候，数据不是直接写进磁盘，它会在内存中保留一段时间（时间以及数据量阈值可以设定）。但把数据保存在内存中可能有更高的概率引起数据丢失，为了解决这个问题，数据会先写在一个叫做Write-Ahead logfile的文件中，然后再写入内存中。所以在系统出现故障的时候，数据可以通过这个日志文件重建。
+
+2) HFile
+
+这是在磁盘上保存原始数据的实际的物理文件，是实际的存储文件。
+
+3) Store
+
+HFile存储在Store中，一个Store对应HBase表中的一个列族。
+
+4) MemStore
+
+顾名思义，就是内存存储，位于内存中，用来保存当前的数据操作，所以当数据保存在WAL中之后，RegsionServer会在内存中存储键值对。
+
+5) Region
+
+Hbase表的分片，HBase表会根据RowKey值被切分成不同的region存储在RegionServer中，在一个RegionServer中可以有多个不同的region。
+
+HBase的架构
+HBase一种是作为存储的分布式文件系统，另一种是作为数据处理模型的MR框架。因为日常开发人员比较熟练的是结构化的数据进行处理，但是在HDFS直接存储的文件往往不具有结构化，所以催生出了HBase在HDFS上的操作。如果需要查询数据，只需要通过键值便可以成功访问。
+
+架构图如下图所示：
+HBase内置有Zookeeper，但一般我们会有其他的Zookeeper集群来监管master和regionserver，Zookeeper通过选举，保证任何时候，集群中只有一个活跃的HMaster，HMaster与HRegionServer 启动时会向ZooKeeper注册，存储所有HRegion的寻址入口，实时监控HRegionserver的上线和下线信息。并实时通知给HMaster，存储HBase的schema和table元数据，默认情况下，HBase 管理ZooKeeper 实例，Zookeeper的引入使得HMaster不再是单点故障。一般情况下会启动两个HMaster，非Active的HMaster会定期的和Active HMaster通信以获取其最新状态，从而保证它是实时更新的，因而如果启动了多个HMaster反而增加了Active HMaster的负担。
+
+一个RegionServer可以包含多个HRegion，每个RegionServer维护一个HLog，和多个HFiles以及其对应的MemStore。RegionServer运行于DataNode上，数量可以与DatNode数量一致，请参考如下架构图：
